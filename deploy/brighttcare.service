@@ -1,0 +1,23 @@
+[Unit]
+Description=Brighttcare - student health screening app
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=brighttcare
+Group=brighttcare
+WorkingDirectory=/opt/brighttcare
+EnvironmentFile=/opt/brighttcare/.env
+Environment=NODE_ENV=production
+Environment=PORT=3000
+ExecStart=/opt/brighttcare/node_modules/.bin/next start -p 3000
+Restart=on-failure
+RestartSec=5
+
+# Light hardening — the app doesn't need broader privilege access.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

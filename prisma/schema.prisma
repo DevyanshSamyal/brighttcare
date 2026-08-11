@@ -1,0 +1,336 @@
+// Brighttcare — student health screening records
+// See README.md for the field-by-field rationale, and note the flagged
+// assumptions in the "DentalRecord" section (fields (d)-(m) are a best
+// guess pending confirmation against the real form).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Enums
+// ────────────────────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  DOCTOR
+}
+
+/// The four clinical sections. Each doctor account is assigned one or more
+/// of these; a doctor can only read/write records for their assigned section(s).
+enum SectionType {
+  GENERAL_EXAM
+  ENT
+  VISION
+  DENTAL
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+/// Per-section completion state for a given student.
+/// PENDING -> doctor hasn't finished (or hasn't started).
+/// COMPLETE -> all required fields for the section are filled in.
+/// ABSENT -> doctor explicitly recorded the student as not presenting for this section.
+/// The final PDF only becomes available once every section is COMPLETE or ABSENT.
+enum SectionStatus {
+  PENDING
+  COMPLETE
+  ABSENT
+}
+
+enum YesNo {
+  YES
+  NO
+}
+
+/// Used for "No Abnormality / Abnormality" style findings (nails/hair/skin,
+/// CNS speech, dental extra-oral) — same underlying meaning as Normal/Abnormal.
+enum AbnormalityStatus {
+  NO_ABNORMALITY
+  ABNORMALITY
+}
+
+enum TonsilsStatus {
+  ENLARGED
+  NOT_ENLARGED
+}
+
+enum PresenceStatus {
+  PRESENT
+  ABSENT
+}
+
+/// Snellen-style visual acuity, fixed denominator of 6, as confirmed
+/// ("1/6 to 6/6" scale) — six discrete values from worst to best.
+enum VisionScore {
+  V_1_6
+  V_2_6
+  V_3_6
+  V_4_6
+  V_5_6
+  V_6_6
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Org structure: School -> SchoolClass -> Student
+// ────────────────────────────────────────────────────────────────────────────
+
+model School {
+  id        String       @id @default(cuid())
+  name      String
+  classes   SchoolClass[]
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+}
+
+/// A single grade + division, e.g. grade "8", section "A" -> displayed as "8-A".
+model SchoolClass {
+  id        String    @id @default(cuid())
+  school    School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId  String
+  grade     String
+  section   String
+  students  Student[]
+  createdAt DateTime  @default(now())
+
+  @@unique([schoolId, grade, section])
+}
+
+model Student {
+  id              String   @id @default(cuid())
+  class           SchoolClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+  classId         String
+  name            String
+  rollNumber      String
+  admissionNumber String
+  parentage       String
+  gender          Gender
+  mobileNumber    String
+
+  // Set by admin, required before the final PDF can be generated.
+  examinationDate    DateTime?
+  medicalOfficerName String?
+
+  pdfGeneratedAt DateTime?
+  pdfGeneratedBy String?
+
+  generalExam GeneralExamRecord?
+  ent         EntRecord?
+  vision      VisionRecord?
+  dental      DentalRecord?
+
+  auditLogs AuditLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([classId, rollNumber])
+  @@index([admissionNumber])
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Accounts
+// ────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  name         String
+  role         Role
+
+  /// Only populated for DOCTOR accounts. A doctor can be assigned more than
+  /// one section, and a section can have more than one doctor assigned to it.
+  sections DoctorSection[]
+
+  auditLogs AuditLog[]
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model DoctorSection {
+  id       String      @id @default(cuid())
+  doctor   User        @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  doctorId String
+  section  SectionType
+
+  @@unique([doctorId, section])
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Section records — one row per student per section.
+// Every record carries `status`, `remarks` (optional free text, per request),
+// and `updatedBy` / `updatedAt` for a quick "last touched by" without needing
+// to open the full audit log.
+// ────────────────────────────────────────────────────────────────────────────
+
+model GeneralExamRecord {
+  id        String        @id @default(cuid())
+  student   Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  studentId String        @unique
+  status    SectionStatus @default(PENDING)
+
+  heightCm Float?
+  weightKg Float?
+  // BMI is derived from height/weight at read time (see lib/bmi.ts) rather
+  // than stored redundantly, so it's never out of sync with the inputs.
+
+  nailsHairSkin AbnormalityStatus?
+  anemiaFigure  YesNo?
+  allergy       YesNo?
+
+  abdomenSoft       YesNo?
+  abdomenHard       YesNo?
+  abdomenDistended  YesNo?
+  abdomenBowelSound YesNo?
+
+  cnsConscious YesNo?
+  cnsOriented  YesNo?
+  cnsPlayful   YesNo?
+  cnsActive    YesNo?
+  cnsAlert     YesNo?
+  cnsSpeech    AbnormalityStatus?
+
+  pastHistoryMedical  YesNo?
+  pastHistorySurgical YesNo?
+
+  // Free text so "NA" is a valid entry, not just numbers.
+  bp    String?
+  pulse String?
+  hip   String?
+  waist String?
+
+  remarks String?
+
+  updatedBy   String?
+  updatedAt   DateTime @updatedAt
+}
+
+model EntRecord {
+  id        String        @id @default(cuid())
+  student   Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  studentId String        @unique
+  status    SectionStatus @default(PENDING)
+
+  rightEarDeformity     YesNo?
+  rightEarWax           YesNo?
+  rightEarDischarge     YesNo?
+  rightEarNormalHearing YesNo?
+
+  leftEarDeformity     YesNo?
+  leftEarWax           YesNo?
+  leftEarDischarge     YesNo?
+  leftEarNormalHearing YesNo?
+
+  // Single field per the confirmed answer (not split L/R) — flagged as an
+  // assumption in the README if per-ear turns out to be wanted instead.
+  tympanicMembraneNormal YesNo?
+
+  rightNoseObstruction YesNo?
+  rightNoseDischarge   YesNo?
+  leftNoseObstruction  YesNo?
+  leftNoseDischarge    YesNo?
+
+  throatPain YesNo?
+  tonsils    TonsilsStatus?
+  neckNodes  PresenceStatus?
+
+  remarks String?
+
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
+model VisionRecord {
+  id        String        @id @default(cuid())
+  student   Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  studentId String        @unique
+  status    SectionStatus @default(PENDING)
+
+  reVision VisionScore?
+  leVision VisionScore?
+
+  colorBlindnessRE YesNo?
+  colorBlindnessLE YesNo?
+
+  squintRE YesNo?
+  squintLE YesNo?
+
+  remarks String?
+
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
+/// NOTE ON FIELDS (c)-(n): the source form lists a lettered sequence of
+/// Yes/No dental findings from (c) "Plaque" through (n) "Missing Teeth", but
+/// only those two endpoints were confirmed — the ten in between are this
+/// project's best guess at a standard Indian school dental-screening list
+/// and need to be checked against the real form. Renaming or swapping any
+/// of them is a one-file change (this model + the matching entry in
+/// src/lib/sections.ts) with no migration-breaking impact on other data.
+model DentalRecord {
+  id        String        @id @default(cuid())
+  student   Student       @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  studentId String        @unique
+  status    SectionStatus @default(PENDING)
+
+  extraOral AbnormalityStatus?
+
+  // Doctor types the affected tooth numbers rather than picking from a chart.
+  permanentCavities String?
+  primaryCavities   String?
+
+  plaque          YesNo? // (c) — confirmed
+  gumDisease      YesNo? // (d) — best guess
+  gumBleeding     YesNo? // (e) — best guess
+  stains          YesNo? // (f) — best guess
+  malocclusion    YesNo? // (g) — best guess
+  mouthBreathing  YesNo? // (h) — best guess
+  oralHygienePoor YesNo? // (i) — best guess
+  halitosis       YesNo? // (j) — best guess
+  cleftLipPalate  YesNo? // (k) — best guess
+  tongueTie       YesNo? // (l) — best guess
+  ulcersLesions   YesNo? // (m) — best guess
+  missingTeeth    YesNo? // (n) — confirmed
+
+  remarks String?
+
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Audit trail
+// ────────────────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id       String   @id @default(cuid())
+  user     User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userId   String?
+  userName String // denormalized so the log still reads if the account is later removed
+  action   String // e.g. "SECTION_SAVE", "SECTION_MARK_ABSENT", "STUDENT_CREATE", "PDF_GENERATE"
+
+  student   Student? @relation(fields: [studentId], references: [id], onDelete: SetNull)
+  studentId String?
+
+  section SectionType?
+  detail  Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([studentId])
+  @@index([createdAt])
+}
