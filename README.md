@@ -12,10 +12,10 @@ Next.js 15 (App Router) · PostgreSQL · Prisma · NextAuth (Credentials) · Tai
 
 ## First-time setup
 
-
+```bash
 npm install
 cp .env.example .env      # fill in DATABASE_URL, DIRECT_URL, NEXTAUTH_SECRET, etc.
 npx prisma migrate dev --name init
 npx prisma db seed        # creates the first admin account from SEED_ADMIN_* in .env
 npm run dev
-
+```
